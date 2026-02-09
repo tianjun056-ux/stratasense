@@ -1,4 +1,4 @@
-name: scan
+name: StrataSense Weekly Scan
 
 on:
   workflow_dispatch:
@@ -8,6 +8,7 @@ on:
 jobs:
   scan:
     runs-on: ubuntu-24.04
+
     steps:
       - uses: actions/checkout@v4
 
@@ -15,30 +16,35 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Guard: required secrets
+      # 关键：把 secrets 先注入到 env，再检查（不打印值，只检查是否为空）
+      - name: Guard: secrets present
+        shell: bash
         env:
           FRED_API_KEY: ${{ secrets.FRED_API_KEY }}
           EIA_API_KEY:  ${{ secrets.EIA_API_KEY }}
+          PUSHDEER_KEY: ${{ secrets.PUSHDEER_KEY }}
         run: |
-          python - << 'PY'
-          import os, sys
-          miss=[]
-          for k in ("FRED_API_KEY","EIA_API_KEY"):
-            if not (os.getenv(k) or "").strip():
-              miss.append(k)
-          if miss:
-            print("ERR: missing secrets:", ", ".join(miss))
-            sys.exit(2)
-          print("OK: required secrets present")
-          PY
+          missing=()
+          [ -z "${FRED_API_KEY}" ] && missing+=("FRED_API_KEY")
+          [ -z "${EIA_API_KEY}" ]  && missing+=("EIA_API_KEY")
+          [ -z "${PUSHDEER_KEY}" ] && missing+=("PUSHDEER_KEY")
+          if [ ${#missing[@]} -ne 0 ]; then
+            echo "ERR: missing secrets: ${missing[*]}"
+            exit 1
+          fi
+          echo "OK: required secrets present"
 
       - name: Run scan
         env:
           FRED_API_KEY: ${{ secrets.FRED_API_KEY }}
           EIA_API_KEY:  ${{ secrets.EIA_API_KEY }}
-        run: python -m stratasense scan
+        run: |
+          python -m stratasense scan
 
-      - name: Notify (PushDeer)
+      # 关键：无论上面成功失败，都推送（你要的“手动触发必通知/健康确认”）
+      - name: Notify
+        if: always()
         env:
           PUSHDEER_KEY: ${{ secrets.PUSHDEER_KEY }}
-        run: python scripts/pushdeer_notify.py
+        run: |
+          python scripts/pushdeer_notify.py
