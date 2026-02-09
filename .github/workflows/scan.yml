@@ -3,36 +3,23 @@ name: scan
 on:
   workflow_dispatch:
   schedule:
-    # 每周一 09:00 UTC（你可后续再调）
-    - cron: "0 9 * * 1"
+    - cron: "0 1 * * 1"  # 每周一 01:00 UTC（按需改）
 
 jobs:
   scan:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Setup Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
-      # 不泄露密钥，只打印 True/False 用于确认注入成功
-      - name: Sanity check env
-        run: python -c "import os; print('FRED_API_KEY=', bool(os.getenv('FRED_API_KEY'))); print('EIA_API_KEY=', bool(os.getenv('EIA_API_KEY'))); print('PUSHDEER_KEY=', bool(os.getenv('PUSHDEER_KEY')))"
-        env:
-          FRED_API_KEY: ${{ secrets.FRED_API_KEY }}
-          EIA_API_KEY: ${{ secrets.EIA_API_KEY }}
-          PUSHDEER_KEY: ${{ secrets.PUSHDEER_KEY }}
-
       - name: Run scan
-        run: python -m stratasense scan
         env:
           FRED_API_KEY: ${{ secrets.FRED_API_KEY }}
-          EIA_API_KEY: ${{ secrets.EIA_API_KEY }}
-
-      - name: Notify
-        run: python scripts/pushdeer_notify.py
-        env:
+          EIA_API_KEY:  ${{ secrets.EIA_API_KEY }}
           PUSHDEER_KEY: ${{ secrets.PUSHDEER_KEY }}
+        run: |
+          python -m stratasense scan
+          python scripts/pushdeer_notify.py
