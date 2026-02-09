@@ -1,0 +1,30 @@
+name: StrataSense Weekly Scan
+
+on:
+  schedule:
+    # 每周一 UTC 01:00（北京时间 09:00）
+    - cron: "0 1 * * 1"
+  workflow_dispatch:
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Run StrataSense
+        run: |
+          python -m stratasense
+
+      - name: Notify via PushDeer (only if diff changed)
+        env:
+          PUSHDEER_KEY: ${{ secrets.PUSHDEER_KEY }}
+        run: |
+          python scripts/pushdeer_notify.py

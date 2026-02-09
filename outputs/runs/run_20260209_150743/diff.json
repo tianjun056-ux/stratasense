@@ -1,0 +1,97 @@
+{
+  "L1": {
+    "added": [],
+    "removed": [],
+    "unchanged": [
+      {
+        "name": "The Economist",
+        "kind": "media",
+        "note": "只看 Leaders/Briefing/Special Report"
+      },
+      {
+        "name": "Financial Times",
+        "kind": "media",
+        "note": "优先 Big Read，避免 breaking news"
+      },
+      {
+        "name": "CFR (Council on Foreign Relations)",
+        "kind": "think_tank",
+        "note": "Backgrounders 作为结构校准"
+      }
+    ]
+  },
+  "L2": {
+    "added": [],
+    "removed": [],
+    "unchanged": [
+      {
+        "name": "IEA (International Energy Agency)",
+        "kind": "org",
+        "note": "能源约束：WEO/月报摘要"
+      },
+      {
+        "name": "USGS (Mineral Commodity Summaries)",
+        "kind": "gov",
+        "note": "矿产供给集中度/产地分布"
+      },
+      {
+        "name": "ASML Updates",
+        "kind": "company",
+        "note": "算力瓶颈：技术/产能/限制"
+      }
+    ]
+  },
+  "L3": {
+    "added": [],
+    "removed": [],
+    "unchanged": [
+      {
+        "name": "FRED",
+        "kind": "dataset",
+        "note": "宏观数据验证器"
+      },
+      {
+        "name": "BlackRock Investment Outlook",
+        "kind": "institution",
+        "note": "大资金可执行世界观"
+      },
+      {
+        "name": "OECD / MSCI",
+        "kind": "institution",
+        "note": "跨地区/指数层对照"
+      }
+    ]
+  },
+  "L4": {
+    "added": [],
+    "removed": [],
+    "unchanged": [
+      {
+        "name": "Bloomberg Markets / Odd Lots",
+        "kind": "media",
+        "note": "情绪温度计"
+      },
+      {
+        "name": "X/Twitter (严格白名单)",
+        "kind": "social",
+        "note": "只关注数据派"
+      },
+      {
+        "name": "Reddit (r/investing 等)",
+        "kind": "social",
+        "note": "反向指标"
+      }
+    ]
+  },
+  "L5": {
+    "added": [],
+    "removed": [],
+    "unchanged": [
+      {
+        "name": "Execution (外部系统)",
+        "kind": "boundary",
+        "note": "不负责交易执行"
+      }
+    ]
+  }
+}
