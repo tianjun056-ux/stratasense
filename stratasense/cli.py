@@ -1,188 +1,127 @@
+from __future__ import annotations
+
 import argparse
-import json
 import os
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Tuple
 
-VERSION = "0.1"
-
-
-def _now_iso_utc() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+from .paths import ensure_dir, resolve_root
+from .iojson import read_json, write_json, write_text
+from .state import State
+from .report import build_report, render_diff_md, now_iso
+from .sensors.fred import default_series as fred_defaults, fetch_latest as fred_fetch
+from .sensors.eia import default_series as eia_defaults, fetch_latest as eia_fetch
+from .sensors.gdelt import default_queries as gdelt_defaults, fetch_counts as gdelt_fetch
 
 
 def _run_id() -> str:
-    return datetime.now().strftime("run_%Y%m%d_%H%M%S")
+    return datetime.utcnow().strftime("run_%Y%m%d_%H%M%S")
 
 
-def _resolve_root(root_arg: str | None) -> Path:
-    # No Hard Path Rule：CLI > ENV > CWD
-    if root_arg:
-        return Path(root_arg).expanduser()
-    env = os.getenv("STRATASENSE_ROOT", "").strip()
-    if env:
-        return Path(env).expanduser()
-    return Path.cwd()
+def _load_prev_state(latest_dir: Path) -> State:
+    state_path = latest_dir / "state.json"
+    if state_path.exists():
+        return State.from_obj(read_json(state_path))
+    # 兼容旧版：如果没有 state.json，但有 report.json，就从 report.values 构造
+    rep = read_json(latest_dir / "report.json")
+    vals = rep.get("values", {}) if isinstance(rep, dict) else {}
+    return State.from_obj({"last": vals})
 
 
-def _sources_v01() -> Dict[str, List[dict]]:
-    return {
-        "L1": [
-            {"name": "The Economist", "kind": "media", "note": "只看 Leaders/Briefing/Special Report"},
-            {"name": "Financial Times", "kind": "media", "note": "优先 Big Read，避免 breaking news"},
-            {"name": "CFR (Council on Foreign Relations)", "kind": "think_tank", "note": "Backgrounders 作为结构校准"},
-        ],
-        "L2": [
-            {"name": "IEA (International Energy Agency)", "kind": "org", "note": "能源约束：WEO/月报摘要"},
-            {"name": "USGS (Mineral Commodity Summaries)", "kind": "gov", "note": "矿产供给集中度/产地分布"},
-            {"name": "ASML Updates", "kind": "company", "note": "算力瓶颈：技术/产能/限制"},
-        ],
-        "L3": [
-            {"name": "FRED", "kind": "dataset", "note": "宏观数据验证器"},
-            {"name": "BlackRock Investment Outlook", "kind": "institution", "note": "大资金可执行世界观"},
-            {"name": "OECD / MSCI", "kind": "institution", "note": "跨地区/指数层对照"},
-        ],
-        "L4": [
-            {"name": "Bloomberg Markets / Odd Lots", "kind": "media", "note": "情绪温度计"},
-            {"name": "X/Twitter (严格白名单)", "kind": "social", "note": "只关注数据派"},
-            {"name": "Reddit (r/investing 等)", "kind": "social", "note": "反向指标"},
-        ],
-        "L5": [
-            {"name": "Execution (外部系统)", "kind": "boundary", "note": "不负责交易执行"},
-        ],
-    }
+def _collect_values() -> Tuple[Dict[str, float], List[str]]:
+    notes: List[str] = []
+    values: Dict[str, float] = {}
 
+    fred_key = (os.getenv("FRED_API_KEY") or "").strip()
+    eia_key = (os.getenv("EIA_API_KEY") or "").strip()
 
-def _render_md(report: dict) -> str:
-    lines: List[str] = []
-    lines.append(f"# StrataSense 扫描报告（v{report['version']}）")
-    lines.append("")
-    lines.append(f"- run_id: `{report['run_id']}`")
-    lines.append(f"- ts_utc: `{report['ts_utc']}`")
-    lines.append(f"- root: `{report['root']}`")
-    lines.append("")
-    lines.append("## 分层信息源清单")
-    lines.append("")
-    for layer, items in report["sources"].items():
-        lines.append(f"### {layer}")
-        for s in items:
-            lines.append(f"- **{s['name']}**（{s['kind']}）：{s['note']}")
-        lines.append("")
-    return "\n".join(lines)
+    if not fred_key:
+        notes.append("ERR: missing FRED_API_KEY")
+    else:
+        v, n = fred_fetch(fred_key, fred_defaults())
+        values.update(v)
+        notes.extend(n)
 
+    if not eia_key:
+        notes.append("ERR: missing EIA_API_KEY")
+    else:
+        v, n = eia_fetch(eia_key, eia_defaults())
+        values.update(v)
+        notes.extend(n)
 
-def _key(s: dict) -> Tuple[str, str]:
-    # 稳定键：name + kind
-    return (s.get("name", ""), s.get("kind", ""))
-
-
-def _diff_sources(prev: Dict[str, List[dict]] | None,
-                  curr: Dict[str, List[dict]]) -> Dict[str, dict]:
-    diff: Dict[str, dict] = {}
-    prev = prev or {}
-    for layer, curr_items in curr.items():
-        prev_items = prev.get(layer, [])
-        prev_set = {_key(s) for s in prev_items}
-        curr_set = {_key(s) for s in curr_items}
-        added = [s for s in curr_items if _key(s) not in prev_set]
-        removed = [s for s in prev_items if _key(s) not in curr_set]
-        unchanged = [s for s in curr_items if _key(s) in prev_set]
-        diff[layer] = {
-            "added": added,
-            "removed": removed,
-            "unchanged": unchanged,
-        }
-    return diff
-
-
-def _render_diff_md(diff: Dict[str, dict]) -> str:
-    lines: List[str] = []
-    lines.append("# StrataSense 结构差分（diff）")
-    lines.append("")
-    for layer, d in diff.items():
-        lines.append(f"## {layer}")
-        for k in ("added", "removed", "unchanged"):
-            items = d.get(k, [])
-            if not items:
-                continue
-            lines.append(f"### {k}")
-            for s in items:
-                lines.append(f"- **{s['name']}**（{s['kind']}）")
-            lines.append("")
-    return "\n".join(lines)
-
-
-def _write_outputs(root: Path, report: dict, diff: Dict[str, dict] | None) -> None:
-    out_root = root / "outputs"
-    run_dir = out_root / "runs" / report["run_id"]
-    latest_dir = out_root / "latest"
-    run_dir.mkdir(parents=True, exist_ok=True)
-    latest_dir.mkdir(parents=True, exist_ok=True)
-
-    # report
-    json_bytes = json.dumps(report, ensure_ascii=False, indent=2).encode("utf-8")
-    md_text = _render_md(report)
-    (run_dir / "report.json").write_bytes(json_bytes)
-    (run_dir / "report.md").write_text(md_text, encoding="utf-8")
-    (latest_dir / "report.json").write_bytes(json_bytes)
-    (latest_dir / "report.md").write_text(md_text, encoding="utf-8")
-
-    # diff（如果存在）
-    if diff is not None:
-        diff_json = json.dumps(diff, ensure_ascii=False, indent=2).encode("utf-8")
-        diff_md = _render_diff_md(diff)
-        (run_dir / "diff.json").write_bytes(diff_json)
-        (run_dir / "diff.md").write_text(diff_md, encoding="utf-8")
-        (latest_dir / "diff.json").write_bytes(diff_json)
-        (latest_dir / "diff.md").write_text(diff_md, encoding="utf-8")
-
-
-def _load_prev_sources(latest_report: Path) -> Dict[str, List[dict]] | None:
-    if not latest_report.exists():
-        return None
+    # GDELT：无 key（失败也不阻塞）
     try:
-        data = json.loads(latest_report.read_text(encoding="utf-8"))
-        return data.get("sources")
-    except Exception:
-        return None
+        v, n = gdelt_fetch(gdelt_defaults())
+        values.update(v)
+        notes.extend(n)
+    except Exception as e:
+        notes.append(f"GDELT_ERR: {type(e).__name__}")
+
+    return values, notes
 
 
-def cmd_scan(root_arg: str | None) -> int:
-    root = _resolve_root(root_arg).resolve()
-    latest_report = root / "outputs" / "latest" / "report.json"
-    prev_sources = _load_prev_sources(latest_report)
+def cmd_scan(args: argparse.Namespace) -> int:
+    root = resolve_root(args.root)
+    out_root = root / "outputs"
+    latest = out_root / "latest"
+    runs = out_root / "runs" / _run_id()
+    ensure_dir(latest)
+    ensure_dir(runs)
 
-    report = {
-        "version": VERSION,
-        "run_id": _run_id(),
-        "ts_utc": _now_iso_utc(),
-        "root": str(root),
-        "sources": _sources_v01(),
+    prev = _load_prev_state(latest)
+    values, notes = _collect_values()
+    cur = State(last=values)
+
+    gh_event = (os.getenv("GITHUB_EVENT_NAME") or "").strip()
+    notify = bool(args.force_notify) or (gh_event == "workflow_dispatch")
+
+    meta = {
+        "as_of": now_iso(),
+        "run_id": runs.name,
+        "event": gh_event or "local",
+        "notify": notify,
     }
 
-    diff = _diff_sources(prev_sources, report["sources"]) if prev_sources else None
-    _write_outputs(root, report, diff)
+    rep = build_report(prev, cur, meta, notes)
+    diff_md = render_diff_md(rep)
 
-    # 最少输出（CI 友好）
-    print(f"OK: {(root / 'outputs' / 'latest' / 'report.json').as_posix()}")
-    if diff is not None:
-        print(f"OK: {(root / 'outputs' / 'latest' / 'diff.md').as_posix()}")
+    # 写 runs（归档）
+    write_json(runs / "state.json", cur.to_obj())
+    write_json(runs / "report.json", {"meta": rep.meta, "values": rep.values, "notes": rep.notes, "changes": rep.changes})
+    write_text(runs / "diff.md", diff_md)
+
+    # 写 latest（指针）
+    write_json(latest / "state.json", cur.to_obj())
+    write_json(latest / "report.json", {"meta": rep.meta, "values": rep.values, "notes": rep.notes, "changes": rep.changes})
+    write_text(latest / "diff.md", diff_md)
+
+    # 默认沉默：只输出必要 OK
+    print(f"OK: {str((latest / 'report.json').as_posix())}")
+    print(f"OK: {str((latest / 'diff.md').as_posix())}")
     return 0
 
 
-def main(argv: List[str] | None = None) -> int:
+def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="stratasense", add_help=True)
-    p.add_argument("--root", default=None, help="项目根目录（可选；默认用 ENV/CWD）")
-    p.add_argument("--version", action="store_true", help="显示版本信息")
+    sub = p.add_subparsers(dest="cmd")
+
+    s = sub.add_parser("scan", help="run weekly scan (FRED+EIA+GDELT) -> outputs/")
+    s.add_argument("--root", default=None, help="root dir (CLI > ENV STRATASENSE_ROOT > CWD)")
+    s.add_argument("--force-notify", action="store_true", help="manual trigger must notify (flag only recorded)")
+    s.set_defaults(func=cmd_scan)
+
+    return p
+
+
+def main(argv: List[str] | None = None) -> int:
+    p = build_parser()
     args = p.parse_args(argv)
 
-    if args.version:
-        print(f"StrataSense v{VERSION}")
-        return 0
-
-    # 默认行为：scan（含 diff）
-    return cmd_scan(args.root)
+    if not getattr(args, "cmd", None):
+        # 默认行为：等价于 scan（保持单入口好用）
+        args = p.parse_args(["scan"])
+    return int(args.func(args))
 
 
 if __name__ == "__main__":
