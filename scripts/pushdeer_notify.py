@@ -1,111 +1,174 @@
-from __future__ import annotations
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+PushDeer notification (human-friendly CN)
+
+- Reads outputs/latest/report.json and outputs/latest/diff.md
+- Generates a short Chinese summary
+- Sends via PushDeer
+"""
 
 import os
-import sys
 import json
+import time
 import urllib.parse
 import urllib.request
 from pathlib import Path
-from typing import Any, Dict, Tuple
+
+ROOT = Path(__file__).resolve().parents[1]
+LATEST = ROOT / "outputs" / "latest"
+REPORT_JSON = LATEST / "report.json"
+DIFF_MD = LATEST / "diff.md"
+
+PUSHDEER_API = "https://api2.pushdeer.com/message/push"
 
 
-def _read_json(p: Path) -> Dict[str, Any]:
+def _read_text(p: Path) -> str:
+    if not p.exists():
+        return ""
+    return p.read_text(encoding="utf-8", errors="replace")
+
+
+def _read_json(p: Path) -> dict:
     if not p.exists():
         return {}
-    return json.loads(p.read_text(encoding="utf-8"))
-
-
-def _resolve_root() -> Path:
-    # No Hard Path Rule: ENV > CWD (workflow 中通常就是 repo root)
-    env = (os.getenv("STRATASENSE_ROOT") or "").strip()
-    if env:
-        return Path(env).expanduser().resolve()
-    return Path.cwd().resolve()
-
-
-def _should_notify(report: Dict[str, Any]) -> Tuple[bool, str]:
-    meta = report.get("meta") or {}
-    changes = report.get("changes") or {}
-    notify_flag = bool(meta.get("notify"))
-    has_change = bool(changes.get("has_change"))
-
-    # 规则：
-    # - 手动触发（notify=true） => 必推送
-    # - 否则只有 has_change => 推送
-    if notify_flag:
-        return True, "manual_or_forced"
-    if has_change:
-        return True, "changed"
-    return False, "no_change"
-
-
-def _pushdeer_send(key: str, text: str, desp: str) -> None:
-    # PushDeer API: https://api2.pushdeer.com/message/push
-    url = "https://api2.pushdeer.com/message/push"
-    payload = {"pushkey": key, "text": text, "desp": desp, "type": "markdown"}
-    data = urllib.parse.urlencode(payload).encode("utf-8")
-
-    req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/x-www-form-urlencoded"})
-    with urllib.request.urlopen(req, timeout=25) as resp:
-        raw = resp.read().decode("utf-8", errors="replace")
-
-    # 尽量解析返回，失败也不抛太多
     try:
-        j = json.loads(raw)
+        return json.loads(_read_text(p))
     except Exception:
-        raise RuntimeError("PushDeer response not json")
+        return {}
 
-    code = j.get("code")
-    if code not in (0, "0"):
-        raise RuntimeError(f"PushDeer code={code} raw={raw[:200]}")
+
+def _parse_diff_sections(diff_md: str) -> dict:
+    """
+    Parse diff.md roughly:
+    expects headings: added / removed / changed / notes (optional)
+    """
+    lines = diff_md.splitlines()
+    sections = {"added": [], "removed": [], "changed": [], "notes": []}
+    cur = None
+    for ln in lines:
+        s = ln.strip()
+        if s.lower() in sections:
+            cur = s.lower()
+            continue
+        if cur is None:
+            continue
+        # bullet items like "- xxx" or "• xxx"
+        if s.startswith(("-", "•", "*")):
+            item = s.lstrip("-•*").strip()
+            if item:
+                sections[cur].append(item)
+        # plain "(none)" style
+        if s.lower() == "(none)":
+            # do nothing
+            pass
+    return sections
+
+
+def _summarize_cn(report: dict, diff_sections: dict) -> tuple[str, str]:
+    """
+    Returns (title, body) in Chinese.
+    """
+    meta = report.get("meta", {}) if isinstance(report, dict) else {}
+    as_of = meta.get("as_of") or report.get("as_of") or ""
+    event = meta.get("event") or report.get("event") or ""
+    has_change = meta.get("has_change")
+    if has_change is None:
+        has_change = report.get("has_change")
+
+    # ★ 人话规则兜底：diff 全空 = 无变化
+    if has_change is None:
+        if (
+            len(diff_sections.get("added", [])) == 0
+            and len(diff_sections.get("removed", [])) == 0
+            and len(diff_sections.get("changed", [])) == 0
+        ):
+            has_change = False
+
+
+    # change counts
+    a = len(diff_sections.get("added", []))
+    r = len(diff_sections.get("removed", []))
+    c = len(diff_sections.get("changed", []))
+    notes = diff_sections.get("notes", [])
+
+    # Title
+    if has_change is True:
+        title = f"StrataSense：发现变化（+{a}/-{r}/~{c}）"
+    elif has_change is False:
+        title = "StrataSense：无变化"
+    else:
+        title = "StrataSense：扫描完成"
+
+    # Body (human)
+    parts = []
+    if as_of:
+        parts.append(f"时间：{as_of}")
+    if event:
+        parts.append(f"触发：{event}")
+
+    # Main conclusion
+    if has_change is True:
+        parts.append(f"结果：有变化（新增 {a}，移除 {r}，变更 {c}）")
+        # include a few items for readability
+        def take(xs, n=5):
+            return xs[:n] if xs else []
+
+        if a:
+            parts.append("新增： " + "；".join(take(diff_sections["added"])))
+        if r:
+            parts.append("移除： " + "；".join(take(diff_sections["removed"])))
+        if c:
+            parts.append("变更： " + "；".join(take(diff_sections["changed"])))
+    elif has_change is False:
+        parts.append("结果：没有检测到变化（本次只是例行扫描）")
+    else:
+        parts.append("结果：扫描完成（未提供 has_change 字段）")
+
+    # Notes / warnings (keep short)
+    if notes:
+        # compress typical ERR lines
+        show = notes[:5]
+        parts.append("备注： " + "；".join(show))
+
+    body = "\n".join(parts)
+    return title, body
+
+
+def _pushdeer_send(key: str, title: str, body: str) -> None:
+    data = {
+        "pushkey": key,
+        "text": title,
+        "desp": body,
+        "type": "markdown",
+    }
+    encoded = urllib.parse.urlencode(data).encode("utf-8")
+    req = urllib.request.Request(PUSHDEER_API, data=encoded, method="POST")
+    with urllib.request.urlopen(req, timeout=20) as resp:
+        raw = resp.read().decode("utf-8", errors="replace")
+    # minimal validation
+    if '"success"' not in raw and '"code":0' not in raw:
+        raise RuntimeError(f"PushDeer response not OK: {raw[:200]}")
 
 
 def main() -> int:
-    root = _resolve_root()
-    latest = root / "outputs" / "latest"
-    report_path = latest / "report.json"
-    diff_path = latest / "diff.md"
-
-    report = _read_json(report_path)
-    if not report:
-        print(f"WARN: missing report.json at {report_path.as_posix()}")
-        return 0
-
-    ok, reason = _should_notify(report)
-    if not ok:
-        # 默认沉默：不该推送就不推送，但给 CI 一行可审计信息
-        print(f"OK: skip notify ({reason})")
-        return 0
-
-    key = (os.getenv("PUSHDEER_KEY") or "").strip()
+    key = os.environ.get("PUSHDEER_KEY", "").strip()
     if not key:
         print("WARN: PUSHDEER_KEY missing, cannot notify")
         return 0
 
-    meta = report.get("meta") or {}
-    as_of = meta.get("as_of")
-    event = meta.get("event")
-    has_change = (report.get("changes") or {}).get("has_change")
+    report = _read_json(REPORT_JSON)
+    diff_md = _read_text(DIFF_MD)
+    diff_sections = _parse_diff_sections(diff_md) if diff_md else {"added": [], "removed": [], "changed": [], "notes": []}
 
-    title = f"StrataSense | {reason} | change={has_change}"
-    desp_lines = []
-    desp_lines.append(f"- as_of: {as_of}")
-    desp_lines.append(f"- event: {event}")
-    desp_lines.append("")
-    # 附上 diff.md（如果存在）
-    if diff_path.exists():
-        try:
-            desp_lines.append(diff_path.read_text(encoding="utf-8"))
-        except Exception:
-            desp_lines.append("(WARN: diff.md read failed)")
-    else:
-        desp_lines.append("(no diff.md)")
+    title, body = _summarize_cn(report, diff_sections)
 
-    try:
-        _pushdeer_send(key, title, "\n".join(desp_lines))
-        print("OK: notified via PushDeer")
-    except Exception as e:
-        print(f"WARN: notify failed: {type(e).__name__}: {e}")
+    # avoid too long (PushDeer sometimes truncates)
+    if len(body) > 3500:
+        body = body[:3500] + "\n\n（内容过长已截断）"
+
+    _pushdeer_send(key, title, body)
+    print("OK: notified via PushDeer")
     return 0
 
 
