@@ -1,0 +1,20 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# --- Virtual envs ---
+.venv/
+venv/
+ENV/
+
+# --- Outputs / runtime artifacts (Cold storage) ---
+outputs/
+*.log
+
+# --- OS / Editor ---
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
