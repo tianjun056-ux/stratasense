@@ -15,11 +15,30 @@ jobs:
         with:
           python-version: "3.11"
 
+      - name: Guard: required secrets
+        env:
+          FRED_API_KEY: ${{ secrets.FRED_API_KEY }}
+          EIA_API_KEY:  ${{ secrets.EIA_API_KEY }}
+        run: |
+          python - << 'PY'
+          import os, sys
+          miss=[]
+          for k in ("FRED_API_KEY","EIA_API_KEY"):
+            if not (os.getenv(k) or "").strip():
+              miss.append(k)
+          if miss:
+            print("ERR: missing secrets:", ", ".join(miss))
+            sys.exit(2)
+          print("OK: required secrets present")
+          PY
+
       - name: Run scan
         env:
           FRED_API_KEY: ${{ secrets.FRED_API_KEY }}
           EIA_API_KEY:  ${{ secrets.EIA_API_KEY }}
+        run: python -m stratasense scan
+
+      - name: Notify (PushDeer)
+        env:
           PUSHDEER_KEY: ${{ secrets.PUSHDEER_KEY }}
-        run: |
-          python -m stratasense scan
-          python scripts/pushdeer_notify.py
+        run: python scripts/pushdeer_notify.py
